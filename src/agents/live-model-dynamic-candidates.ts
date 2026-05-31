@@ -27,9 +27,9 @@ async function runProviderDynamicModelDefault(
   return runProviderDynamicModel(params);
 }
 
-async function normalizeDynamicModelDefault(model: Model, agentDir: string): Promise<Model> {
-  const { normalizeDiscoveredAgentModel } = await import("./agent-model-discovery.js");
-  return normalizeDiscoveredAgentModel(model, agentDir);
+async function normalizeDynamicModelDefault(model: Model, _agentDir: string): Promise<Model> {
+  const { normalizeModelCompat } = await import("../plugins/provider-model-compat.js");
+  return normalizeModelCompat(model);
 }
 
 function liveModelKey(provider: string, id: string): string | null {
