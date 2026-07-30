@@ -29,7 +29,7 @@ type StreamGuardPhaseInput = Omit<
   StreamGuardInput,
   | "abortSignal"
   | "attempt"
-  | "isYieldDetected"
+  | "isAttemptHandoffRequested"
   | "onIdleTimeout"
   | "onRejectedThinkingReplayRepaired"
   | "session"
@@ -66,7 +66,7 @@ export async function prepareEmbeddedAttemptStreamRuntime(input: {
   history: HistoryPhaseInput;
   stream: StreamPhaseInput;
   lifecycle: {
-    isYieldDetected: StreamGuardInput["isYieldDetected"];
+    isAttemptHandoffRequested: StreamGuardInput["isAttemptHandoffRequested"];
     markRejectedThinkingReplayRepaired: () => void;
     markStreamReady: () => void;
     markIdleTimedOut: () => void;
@@ -87,7 +87,7 @@ export async function prepareEmbeddedAttemptStreamRuntime(input: {
     session: activeSession,
     sessionManager,
     sessionLockController: input.sessionLockController,
-    isYieldDetected: input.lifecycle.isYieldDetected,
+    isAttemptHandoffRequested: input.lifecycle.isAttemptHandoffRequested,
     onRejectedThinkingReplayRepaired: input.lifecycle.markRejectedThinkingReplayRepaired,
     onIdleTimeout: (error) => idleTimeoutTriggerRef.current?.(error),
     abortSignal: input.runAbortController.signal,

@@ -69,8 +69,11 @@ type DispatchCall = {
 };
 type PromptErrorCall = {
   error: unknown;
+  markSelfCompactionAborted: () => void;
   markYieldAborted: () => void;
   releaseLeasedSteering: (error?: unknown) => void;
+  selfCompactionAbortSettled: Promise<void> | null;
+  selfCompactionRequested: boolean;
   yieldAbortSettled: Promise<void> | null;
   yieldDetected: boolean;
   yieldMessage: string | null;
@@ -89,6 +92,10 @@ function createFixture() {
     yieldDetected: false,
     yieldMessage: null as string | null,
   };
+  const selfCompactionState = {
+    selfCompactionAbortSettled: null as Promise<void> | null,
+    selfCompactionRequested: false,
+  };
   let prePromptMessageCount = 1;
 
   const setPrePromptMessageCount = vi.fn((count: number) => {
@@ -97,6 +104,9 @@ function createFixture() {
   const setPromptCacheChangesForTurn = vi.fn();
   const setFinalPromptText = vi.fn();
   const markBeforeAgentRunBlocked = vi.fn();
+  const markSelfCompactionAborted = vi.fn(() => {
+    order.push("self-compaction-aborted");
+  });
   const markYieldAborted = vi.fn(() => {
     order.push("yield-aborted");
   });
@@ -242,7 +252,9 @@ function createFixture() {
       setPromptCacheChangesForTurn,
       setFinalPromptText,
       markBeforeAgentRunBlocked,
+      markSelfCompactionAborted,
       markYieldAborted,
+      readSelfCompactionState: () => selfCompactionState,
       readYieldState: () => yieldState,
       stopAcceptingSteerMessages,
       takePendingMidTurnPrecheckRequest: () => undefined,
@@ -251,8 +263,10 @@ function createFixture() {
 
   return {
     input,
+    markSelfCompactionAborted,
     markYieldAborted,
     order,
+    selfCompactionState,
     setFinalPromptText,
     setPrePromptMessageCount,
     setPromptCacheChangesForTurn,
@@ -351,7 +365,7 @@ describe("runEmbeddedAttemptPromptPhase", () => {
       expect(input.yieldMessage).toBe("yield context");
       input.releaseLeasedSteering(input.error);
       input.markYieldAborted();
-      return {};
+      return { kind: "handled" };
     });
 
     await expect(runEmbeddedAttemptPromptPhase(fixture.input)).resolves.toEqual({
@@ -368,5 +382,52 @@ describe("runEmbeddedAttemptPromptPhase", () => {
     expect(mocks.releasePendingSteering).toHaveBeenCalledWith(
       expect.objectContaining({ leaseId: "lease-1", runIds: ["run-1"] }),
     );
+  });
+
+  it("publishes compact-only recovery after a self-compaction abort", async () => {
+    const fixture = createFixture();
+    const submissionError = new Error("self compact");
+    const recoveryError = new Error("Context overflow: proactive self-compaction");
+    const selfCompactionAbortSettled = Promise.resolve();
+    mocks.dispatchPrompt.mockImplementation(async () => {
+      fixture.order.push("dispatch");
+      fixture.selfCompactionState.selfCompactionRequested = true;
+      fixture.selfCompactionState.selfCompactionAbortSettled = selfCompactionAbortSettled;
+      throw submissionError;
+    });
+    mocks.handlePromptError.mockImplementation(async (input: PromptErrorCall) => {
+      fixture.order.push("prompt-error");
+      expect(input.selfCompactionRequested).toBe(true);
+      expect(input.selfCompactionAbortSettled).toBe(selfCompactionAbortSettled);
+      input.markSelfCompactionAborted();
+      return {
+        kind: "self_compaction",
+        preflightRecovery: {
+          route: "compact_only",
+          source: "mid-turn",
+          handled: false,
+        },
+        promptError: recoveryError,
+      };
+    });
+
+    await runEmbeddedAttemptPromptPhase(fixture.input);
+
+    expect(fixture.order.slice(-4)).toEqual([
+      "dispatch",
+      "prompt-error",
+      "self-compaction-aborted",
+      "stop-steering",
+    ]);
+    expect(fixture.markSelfCompactionAborted).toHaveBeenCalledOnce();
+    expect(fixture.state).toMatchObject({
+      preflightRecovery: {
+        route: "compact_only",
+        source: "mid-turn",
+        handled: false,
+      },
+      promptError: recoveryError,
+      promptErrorSource: "precheck",
+    });
   });
 });

@@ -74,6 +74,7 @@ describe("embedded attempt phase lifecycle state", () => {
       state: {
         promptError: null,
         promptErrorSource: null,
+        intentionalHandoffAborted: false,
         yieldAborted: false,
         sessionIdUsed: "session-1",
       },
@@ -101,6 +102,97 @@ describe("embedded attempt phase lifecycle state", () => {
 
     expect(result.timedOutDuringCompaction).toBe(true);
     expect(removeTrailingEntries).toHaveBeenCalledOnce();
+  });
+
+  it("waits on the external attempt signal during a self-compaction handoff", async () => {
+    hoisted.shouldWaitForCompletionRequiredAsyncTasks.mockReturnValue(true);
+    hoisted.waitForCompletionRequiredAsyncTasks.mockResolvedValue({
+      waitedRunIds: ["tool:image_generate:run-123"],
+      timedOutRunIds: [],
+      terminalTasks: [],
+    });
+    const messages: never[] = [];
+    const sessionManager = {
+      appendCustomEntry: vi.fn(),
+      buildSessionContext: () => ({ messages }),
+      getEntries: () => [],
+      removeTrailingEntries: vi.fn(() => 0),
+    };
+    const activeSession = {
+      agent: { state: { messages } },
+      isCompacting: false,
+      isStreaming: false,
+      messages,
+      sessionId: "session-1",
+    };
+    const externalAbortController = new AbortController();
+
+    const result = await settleEmbeddedAttemptStream({
+      attempt: {
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionKey: "agent:main:cron:daily-media:run:run-123",
+        sessionFile: "/tmp/session.jsonl",
+        provider: "test",
+        modelId: "model",
+        model: { api: "openai-responses" },
+        abortSignal: externalAbortController.signal,
+      } as never,
+      activeSession: activeSession as never,
+      sessionManager: sessionManager as never,
+      sessionLockController: {} as never,
+      withOwnedSessionWriteLock: async (operation) => await operation(),
+      subscription: {
+        toolMetas: [{ toolName: "image_generate", asyncStarted: true }],
+        waitForCompactionRetry: async () => {},
+        isCompactionInFlight: () => false,
+        getCompactionCount: () => 0,
+        getCurrentAttemptAssistant: () => undefined,
+        getUsageTotals: () => undefined,
+        getLastAssistantUsage: () => undefined,
+      } as never,
+      state: {
+        promptError: null,
+        promptErrorSource: null,
+        intentionalHandoffAborted: true,
+        yieldAborted: false,
+        sessionIdUsed: "session-1",
+      },
+      readLifecycleState: () => ({
+        aborted: false,
+        timedOut: false,
+        timedOutDuringCompaction: false,
+      }),
+      markTimedOutDuringCompaction: () => {},
+      runAbortDeadlineAtMs: Date.now() + 60_000,
+      runAbortSignal: AbortSignal.abort({
+        code: "session_status_compact",
+        turnHandoff: true,
+      }),
+      isProbeSession: true,
+      abortable: async (promise) => await promise,
+      prePromptMessageCount: 0,
+      toolSearchTargetTranscriptProjections: [],
+      cache: {
+        observabilityEnabled: false,
+        changesForTurn: null,
+        retention: undefined,
+      },
+      shouldFlushForContextEngine: false,
+    });
+
+    expect(result.promptError).toBeNull();
+    expect(hoisted.shouldWaitForCompletionRequiredAsyncTasks).toHaveBeenCalledWith({
+      sessionKey: "agent:main:cron:daily-media:run:run-123",
+      toolMetas: [{ toolName: "image_generate", asyncStarted: true }],
+      yieldDetected: false,
+    });
+    expect(hoisted.waitForCompletionRequiredAsyncTasks).toHaveBeenCalledTimes(1);
+    expect(hoisted.waitForCompletionRequiredAsyncTasks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        abortSignal: externalAbortController.signal,
+      }),
+    );
   });
 
   it("settles a user-aborted run whose async-task wait throws AbortError", async () => {
@@ -152,6 +244,7 @@ describe("embedded attempt phase lifecycle state", () => {
       state: {
         promptError: null,
         promptErrorSource: null,
+        intentionalHandoffAborted: false,
         yieldAborted: false,
         sessionIdUsed: "session-1",
       },

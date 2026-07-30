@@ -61,6 +61,7 @@ import {
 } from "../model-selection.js";
 import { createModelVisibilityPolicy } from "../model-visibility-policy.js";
 import { loadPreparedModelCatalog } from "../prepared-model-catalog.js";
+import { optionalStringEnum } from "../schema/string-enum.js";
 import { resolveSessionModelIdentityRef } from "../session-model-ref.js";
 import {
   describeSessionStatusTool,
@@ -90,11 +91,28 @@ import {
   shouldResolveSessionIdInput,
 } from "./sessions-helpers.js";
 
-const SessionStatusToolSchema = Type.Object({
-  sessionKey: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
-  changesSince: Type.Optional(Type.Integer({ minimum: 0 })),
-});
+const SESSION_STATUS_ACTIONS = ["status", "compact"] as const;
+
+function createSessionStatusToolSchema(selfCompactAvailable: boolean) {
+  return Type.Object({
+    ...(selfCompactAvailable ? { action: optionalStringEnum(SESSION_STATUS_ACTIONS) } : {}),
+    sessionKey: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String()),
+    changesSince: Type.Optional(Type.Integer({ minimum: 0 })),
+  });
+}
+
+type SessionStatusAction = (typeof SESSION_STATUS_ACTIONS)[number];
+
+export type SessionStatusSelfCompactRequest = {
+  sessionKey: string;
+  sessionId: string;
+  agentId: string;
+};
+
+export type SessionStatusSelfCompactHandler = (
+  request: SessionStatusSelfCompactRequest,
+) => Promise<void> | void;
 
 const SessionStatusOriginSchema = Type.Object(
   {
@@ -223,6 +241,21 @@ const commandsStatusRuntimeLoader = createLazyImportLoader<CommandsStatusRuntime
 
 function loadCommandsStatusRuntime(): Promise<CommandsStatusRuntimeModule> {
   return commandsStatusRuntimeLoader.load();
+}
+
+function readSessionStatusAction(params: Record<string, unknown>): SessionStatusAction {
+  const raw = params.action;
+  if (raw === undefined) {
+    return "status";
+  }
+  if (typeof raw !== "string") {
+    throw new Error("session_status action must be a string.");
+  }
+  const action = raw.trim().toLowerCase();
+  if (action === "status" || action === "compact") {
+    return action;
+  }
+  throw new Error(`Unsupported session_status action "${raw}". Use "status" or "compact".`);
 }
 
 type ActiveStatusModelIdentity = { provider?: string; model: string };
@@ -555,17 +588,34 @@ export function createSessionStatusTool(opts?: {
   metadataSnapshot?: PluginMetadataSnapshot;
   /** Active live-run route, kept separate from the persisted/origin delivery route. */
   activeDeliveryContext?: DeliveryContext;
+  /** Requests compaction for the current active run only. */
+  onSelfCompact?: SessionStatusSelfCompactHandler;
 }): AnyAgentTool {
+  const onSelfCompact = opts?.onSelfCompact;
   return {
     label: "Session Status",
     name: "session_status",
     displaySummary: SESSION_STATUS_TOOL_DISPLAY_SUMMARY,
-    description: describeSessionStatusTool(),
-    parameters: SessionStatusToolSchema,
+    description: describeSessionStatusTool({ selfCompactAvailable: Boolean(onSelfCompact) }),
+    parameters: createSessionStatusToolSchema(Boolean(onSelfCompact)),
     outputSchema: SessionStatusOutputSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
+      const action = readSessionStatusAction(params);
       const changesSince = readNonNegativeIntegerParam(params, "changesSince");
+      const modelRaw = readStringParam(params, "model");
+      if (action === "compact") {
+        if (!onSelfCompact) {
+          throw new Error(
+            'session_status action "compact" is only available during an active embedded agent run.',
+          );
+        }
+        if (modelRaw !== undefined || changesSince !== undefined) {
+          throw new Error(
+            'session_status action "compact" cannot be combined with model or changesSince.',
+          );
+        }
+      }
       const cfg = opts?.config ?? getRuntimeConfig();
       const { mainKey, alias, effectiveRequesterKey } = resolveSandboxedSessionToolContext({
         cfg,
@@ -864,10 +914,59 @@ export function createSessionStatusTool(opts?: {
         expectedSessionId: access.expectedSessionId,
         targetSessionKey: scopedResolved.key,
         run: async () => {
+          if (action === "compact") {
+            const selfCompactHandler = onSelfCompact;
+            if (!selfCompactHandler) {
+              throw new Error(
+                'session_status action "compact" is only available during an active embedded agent run.',
+              );
+            }
+            const liveSessionKeys = new Set(
+              [
+                opts?.runSessionKey,
+                opts?.agentSessionKey,
+                storeScopedRequesterKey,
+                effectiveRequesterKey,
+                visibilityRequesterKey,
+              ]
+                .map((value) => value?.trim())
+                .filter((value): value is string => Boolean(value)),
+            );
+            const isCurrentSessionTarget =
+              isSemanticCurrentRequest ||
+              resolvedViaImplicitCurrentFallback ||
+              liveSessionKeys.has(scopedResolved.key.trim());
+            if (!isCurrentSessionTarget) {
+              throw new Error(
+                'session_status action "compact" can only target the current session.',
+              );
+            }
+            const sessionId = scopedResolved.entry.sessionId?.trim();
+            if (!sessionId) {
+              throw new Error('session_status action "compact" requires a live session id.');
+            }
+            await selfCompactHandler({
+              sessionKey: scopedResolved.key,
+              sessionId,
+              agentId,
+            });
+            const statusText =
+              "Self-compaction requested. The current turn will stop, compact context, and resume from the transcript.";
+            return {
+              content: [{ type: "text", text: statusText }],
+              details: {
+                ok: true,
+                sessionKey: scopedResolved.key,
+                changedModel: false,
+                stateVersion: getSessionStateVersion(scopedResolved.key, agentId),
+                statusText,
+              },
+            };
+          }
+
           const configured = resolveDefaultModelForAgent({ cfg, agentId });
           const selectedAgentDir = resolveAgentDir(cfg, agentId);
           const selectedWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-          const modelRaw = readStringParam(params, "model");
           let changedModel = false;
           if (typeof modelRaw === "string") {
             const selection = await resolveModelOverride({

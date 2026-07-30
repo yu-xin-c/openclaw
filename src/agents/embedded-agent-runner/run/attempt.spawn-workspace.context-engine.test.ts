@@ -49,6 +49,7 @@ import {
   cleanupEmbeddedAttemptResources,
 } from "./attempt.subscription-cleanup.js";
 import type { MidTurnPrecheckRequest } from "./midturn-precheck.js";
+import { PREEMPTIVE_OVERFLOW_ERROR_TEXT } from "./preemptive-compaction.js";
 
 const hoisted = getHoisted();
 const embeddedSessionId = "embedded-session";
@@ -66,6 +67,12 @@ type ToolResultGuardInstallParams = {
     onMidTurnPrecheck?: (request: MidTurnPrecheckRequest) => void;
   };
 };
+type SessionStatusSelfCompactCallback = (request: {
+  sessionKey: string;
+  sessionId: string;
+  agentId: string;
+}) => Promise<void> | void;
+type SessionYieldCallback = (message: string) => Promise<void> | void;
 type MockCallSource = {
   mock: {
     calls: ArrayLike<ReadonlyArray<unknown>>;
@@ -3358,6 +3365,216 @@ describe("runEmbeddedAttempt context engine mid-turn precheck integration", () =
       overflowTokens: 2000,
     });
     expect(result.messagesSnapshot).toEqual([seedMessage]);
+  });
+});
+
+describe("runEmbeddedAttempt session self-compaction integration", () => {
+  const sessionKey = "agent:main:main";
+  const tempPaths: string[] = [];
+
+  function captureHandoffCallbacks() {
+    const callbacks: {
+      selfCompact?: SessionStatusSelfCompactCallback;
+      yield?: SessionYieldCallback;
+    } = {};
+    hoisted.createOpenClawCodingToolsMock.mockImplementation((options: unknown) => {
+      const handoffOptions = options as {
+        onSessionStatusSelfCompact?: SessionStatusSelfCompactCallback;
+        onYield?: SessionYieldCallback;
+      };
+      callbacks.selfCompact = handoffOptions.onSessionStatusSelfCompact;
+      callbacks.yield = handoffOptions.onYield;
+      return [];
+    });
+    return callbacks;
+  }
+
+  beforeEach(() => {
+    resetEmbeddedAttemptHarness();
+    clearMemoryPluginState();
+  });
+
+  afterEach(async () => {
+    await cleanupTempPaths(tempPaths);
+    clearMemoryPluginState();
+    vi.restoreAllMocks();
+  });
+
+  it("converts an active-run compact request into compact-only recovery", async () => {
+    const callbacks = captureHandoffCallbacks();
+    const compact = vi.fn();
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: {
+        ...createContextEngineBootstrapAndAssemble(),
+        compact,
+      },
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+      },
+      sessionMessages: [seedMessage],
+      sessionPrompt: async () => {
+        if (!callbacks.selfCompact) {
+          throw new Error("self-compaction callback was not installed");
+        }
+        await callbacks.selfCompact({
+          sessionKey,
+          sessionId: embeddedSessionId,
+          agentId: "main",
+        });
+      },
+    });
+
+    expect(projectAgentRunAttemptTerminal(result.terminal)).toMatchObject({
+      aborted: false,
+      promptError: expect.objectContaining({ message: PREEMPTIVE_OVERFLOW_ERROR_TEXT }),
+      promptErrorSource: "precheck",
+    });
+    expect(result.preflightRecovery).toEqual({
+      route: "compact_only",
+      source: "mid-turn",
+      handled: false,
+    });
+    expect(result.messagesSnapshot).toEqual([seedMessage]);
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it("rejects a compact request whose live session identity no longer matches", async () => {
+    const callbacks = captureHandoffCallbacks();
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+      },
+      sessionMessages: [seedMessage],
+      sessionPrompt: async () => {
+        if (!callbacks.selfCompact) {
+          throw new Error("self-compaction callback was not installed");
+        }
+        await callbacks.selfCompact({
+          sessionKey,
+          sessionId: "stale-session",
+          agentId: "main",
+        });
+      },
+    });
+
+    expect(projectAgentRunAttemptTerminal(result.terminal)).toMatchObject({
+      aborted: false,
+      promptError: expect.objectContaining({
+        message: 'session_status action "compact" no longer matches the active agent run.',
+      }),
+      promptErrorSource: "prompt",
+    });
+    expect(result.preflightRecovery).toBeUndefined();
+  });
+
+  it("keeps self-compaction as the single handoff when a later yield races", async () => {
+    const callbacks = captureHandoffCallbacks();
+    const abort = vi.fn(async (_reason?: unknown) => {});
+    const activeSession = createDefaultEmbeddedSession({
+      initialMessages: [seedMessage],
+      prompt: async () => {
+        if (!callbacks.selfCompact || !callbacks.yield) {
+          throw new Error("handoff callbacks were not installed");
+        }
+        await callbacks.selfCompact({
+          sessionKey,
+          sessionId: embeddedSessionId,
+          agentId: "main",
+        });
+        await callbacks.yield("this later yield must not replace self-compaction");
+      },
+    });
+    activeSession.abort = abort;
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      createSession: () => activeSession,
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+      },
+      sessionMessages: [seedMessage],
+    });
+
+    expect(projectAgentRunAttemptTerminal(result.terminal)).toMatchObject({
+      aborted: false,
+      promptError: expect.objectContaining({ message: PREEMPTIVE_OVERFLOW_ERROR_TEXT }),
+      promptErrorSource: "precheck",
+    });
+    expect(result.preflightRecovery).toEqual({
+      route: "compact_only",
+      source: "mid-turn",
+      handled: false,
+    });
+    expect(result.messagesSnapshot).toEqual([seedMessage]);
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledWith({
+      code: "session_status_compact",
+      turnHandoff: true,
+    });
+  });
+
+  it("keeps yield as the single handoff when a later self-compaction races", async () => {
+    const callbacks = captureHandoffCallbacks();
+    const abort = vi.fn(async (_reason?: unknown) => {});
+    const activeSession = createDefaultEmbeddedSession({
+      initialMessages: [seedMessage],
+      prompt: async () => {
+        if (!callbacks.selfCompact || !callbacks.yield) {
+          throw new Error("handoff callbacks were not installed");
+        }
+        await callbacks.yield("yield won the handoff race");
+        await callbacks.selfCompact({
+          sessionKey,
+          sessionId: embeddedSessionId,
+          agentId: "main",
+        });
+      },
+    });
+    activeSession.abort = abort;
+    Object.assign(activeSession.agent, { steer: vi.fn() });
+
+    const result = await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      createSession: () => activeSession,
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+      },
+      sessionMessages: [seedMessage],
+    });
+
+    expect(projectAgentRunAttemptTerminal(result.terminal)).toMatchObject({
+      aborted: false,
+      cleanupYieldAborted: true,
+      promptError: null,
+    });
+    expect(result.preflightRecovery).toBeUndefined();
+    expect(result.messagesSnapshot).toEqual([
+      seedMessage,
+      expect.objectContaining({
+        role: "custom",
+        customType: "openclaw.sessions_yield",
+        details: {
+          source: "sessions_yield",
+          message: "yield won the handoff race",
+        },
+      }),
+    ]);
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledWith({
+      code: "sessions_yield",
+      turnHandoff: true,
+    });
   });
 });
 

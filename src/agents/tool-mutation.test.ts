@@ -10,8 +10,20 @@ import {
 } from "./tool-mutation.js";
 
 describe("tool mutation helpers", () => {
-  it("treats session_status as mutating only when model override is provided", () => {
+  it("treats session_status compact and model overrides as mutating", () => {
     expect(isMutatingToolCall("session_status", { sessionKey: "agent:main:main" })).toBe(false);
+    expect(
+      isMutatingToolCall("session_status", {
+        action: "status",
+        sessionKey: "agent:main:main",
+      }),
+    ).toBe(false);
+    expect(
+      isMutatingToolCall("session_status", {
+        action: "compact",
+        sessionKey: "agent:main:main",
+      }),
+    ).toBe(true);
     expect(
       isMutatingToolCall("session_status", {
         sessionKey: "agent:main:main",

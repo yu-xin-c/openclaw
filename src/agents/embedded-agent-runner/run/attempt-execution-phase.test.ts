@@ -104,10 +104,14 @@ function createFixture() {
     diagnostics: { diagnosticTrace: {}, runTrace: {} },
     state,
     lifecycle: {
+      readSelfCompactionState: () => ({
+        selfCompactionAbortSettled: null,
+        selfCompactionRequested: true,
+      }),
       readYieldState: () => ({
         yieldAbortSettled: null,
-        yieldDetected: true,
-        yieldMessage: "yield",
+        yieldDetected: false,
+        yieldMessage: null,
       }),
       setToolSearchCatalogExecutor,
     },
@@ -195,12 +199,12 @@ describe("runEmbeddedAttemptExecutionPhase", () => {
         trackPromptSettlePromise: fixture.trackPromptSettlePromise,
       }),
     );
-    expect(streamInput.lifecycle.isYieldDetected()).toBe(true);
+    expect(streamInput.lifecycle.isAttemptHandoffRequested()).toBe(true);
     expect(streamInput.lifecycle.readRunState()).toEqual({
       aborted: true,
       promptError: null,
       timedOut: true,
-      yieldDetected: true,
+      yieldDetected: false,
     });
     expect(streamInput.stream.isReplaySafeTool(fixture.replaySafeTool)).toBe(true);
   });

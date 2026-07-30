@@ -77,6 +77,7 @@ export async function settleEmbeddedAttemptStream(input: {
   state: {
     promptError: unknown;
     promptErrorSource: AgentRunAttemptFailureSource | null;
+    intentionalHandoffAborted: boolean;
     yieldAborted: boolean;
     sessionIdUsed: string;
   };
@@ -137,11 +138,17 @@ export async function settleEmbeddedAttemptStream(input: {
     );
     let asyncTaskWait: CompletionRequiredAsyncTaskWaitResult;
     try {
+      // Self-compaction already fired the internal run signal. Keep the
+      // attempt signal so later operator cancellation can still stop this wait.
+      const waitAbortSignal =
+        state.intentionalHandoffAborted && !state.yieldAborted
+          ? attempt.abortSignal
+          : input.runAbortSignal;
       asyncTaskWait = await waitForCompletionRequiredAsyncTasks({
         getToolMetas: getAsyncStartedToolMetas,
         sessionKey: attempt.sessionKey,
         deadlineAtMs: completionRequiredAsyncDeadlineAtMs,
-        abortSignal: input.runAbortSignal,
+        ...(waitAbortSignal ? { abortSignal: waitAbortSignal } : {}),
       });
     } catch (err) {
       // Timeouts AND user aborts must still settle so the attempt reaches
@@ -189,12 +196,12 @@ export async function settleEmbeddedAttemptStream(input: {
         !promptError &&
         !input.readLifecycleState().aborted &&
         !input.readLifecycleState().timedOut &&
-        !state.yieldAborted &&
+        !state.intentionalHandoffAborted &&
         currentAssistant?.stopReason === "stop";
       await input.onBlockReplyFlush({ reason: "pre_compaction", attemptAccepted });
     }
 
-    const compactionRetryWait = state.yieldAborted
+    const compactionRetryWait = state.intentionalHandoffAborted
       ? { timedOut: false }
       : await waitForCompactionRetryWithAggregateTimeout({
           waitForCompactionRetry: subscription.waitForCompactionRetry,

@@ -32,6 +32,7 @@ function createFixture(overrides?: Partial<FinalizeInput>) {
   const phaseState: ReturnType<FinalizeInput["getState"]> = {
     promptError: null,
     promptErrorSource: null,
+    intentionalHandoffAborted: false,
     yieldAborted: false,
     sessionIdUsed: "initial-session",
     sessionFileUsed: "initial.jsonl",

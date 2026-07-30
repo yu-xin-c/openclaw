@@ -147,7 +147,7 @@ function createFixture() {
     onSessionCreated: vi.fn(() => order.push("own-session")),
     onSessionManagerCreated: vi.fn(() => order.push("own-manager")),
     onSessionSettleTrackerReady: vi.fn(() => order.push("own-settle-tracker")),
-    onSessionYieldReady: vi.fn(() => order.push("own-yield")),
+    onSessionHandoffReady: vi.fn(() => order.push("own-handoff")),
     onTrajectoryRecorderCreated: vi.fn(() => order.push("own-trajectory")),
   };
   const externalAbortController = {
@@ -235,7 +235,7 @@ describe("prepareEmbeddedAttemptSessionRuntime", () => {
       "settle-tracker",
       "arm-session-abort",
       "own-settle-tracker",
-      "own-yield",
+      "own-handoff",
       "context-guards",
       "own-context-guards",
       "cache-trace",
@@ -274,7 +274,7 @@ describe("prepareEmbeddedAttemptSessionRuntime", () => {
     expect(fixture.lifecycle.onSessionSettleTrackerReady).toHaveBeenCalledWith(
       fixture.buildAbortSettlePromise,
     );
-    expect(fixture.lifecycle.onSessionYieldReady).toHaveBeenCalledWith({
+    expect(fixture.lifecycle.onSessionHandoffReady).toHaveBeenCalledWith({
       abortActiveSession: fixture.abortActiveSession,
       activeSession: fixture.activeSession,
     });

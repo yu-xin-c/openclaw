@@ -20,13 +20,13 @@ import {
   dropThinkingBlocks,
   wrapAnthropicStreamWithRecovery,
 } from "../thinking.js";
+import {
+  createAttemptHandoffAbortedResponse,
+  isAttemptHandoffAbortReason,
+} from "./attempt-handoff.js";
 import { wrapStreamFnWithDiagnosticModelCallEvents } from "./attempt.model-diagnostic-events.js";
 import { resolveUnknownToolGuardThreshold } from "./attempt.run-decisions.js";
 import type { createEmbeddedAttemptSessionLockController } from "./attempt.session-lock.js";
-import {
-  createYieldAbortedResponse,
-  isSessionsYieldAbortReason,
-} from "./attempt.sessions-yield.js";
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
 import {
   shouldRepairMalformedToolCallArguments,
@@ -68,7 +68,7 @@ export function installEmbeddedAttemptStreamGuards(input: {
   isOpenAIResponsesApi: boolean;
   replayAllowedToolNames: Set<string>;
   liveAllowedToolNames: Set<string>;
-  isYieldDetected: () => boolean;
+  isAttemptHandoffRequested: () => boolean;
   clientToolLoopDetection: ReturnType<
     typeof import("../../agent-tools.js").resolveToolLoopDetectionConfig
   >;
@@ -190,8 +190,12 @@ export function installEmbeddedAttemptStreamGuards(input: {
   const innerStreamFn = session.agent.streamFn;
   session.agent.streamFn = (model, context, options) => {
     const signal = input.abortSignal as AbortSignal & { reason?: unknown };
-    if (input.isYieldDetected() && signal.aborted && isSessionsYieldAbortReason(signal.reason)) {
-      return createYieldAbortedResponse(model) as unknown as Awaited<
+    if (
+      input.isAttemptHandoffRequested() &&
+      signal.aborted &&
+      isAttemptHandoffAbortReason(signal.reason)
+    ) {
+      return createAttemptHandoffAbortedResponse(model) as unknown as Awaited<
         ReturnType<typeof innerStreamFn>
       >;
     }

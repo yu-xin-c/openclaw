@@ -936,21 +936,25 @@ vi.mock("./compaction-retry-aggregate-timeout.js", () => ({
   }),
 }));
 
-vi.mock("./compaction-timeout.js", () => ({
-  resolveRunTimeoutDuringCompaction: () => "abort",
-  selectCompactionTimeoutSnapshot: ({
-    currentSnapshot,
-    currentSessionId,
-  }: {
-    currentSnapshot: unknown[];
-    currentSessionId: string;
-  }) => ({
-    messagesSnapshot: currentSnapshot,
-    sessionIdUsed: currentSessionId,
-    source: "current",
-  }),
-  shouldFlagCompactionTimeout: () => false,
-}));
+vi.mock("./compaction-timeout.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./compaction-timeout.js")>();
+  return {
+    ...actual,
+    resolveRunTimeoutDuringCompaction: () => "abort",
+    selectCompactionTimeoutSnapshot: ({
+      currentSnapshot,
+      currentSessionId,
+    }: {
+      currentSnapshot: unknown[];
+      currentSessionId: string;
+    }) => ({
+      messagesSnapshot: currentSnapshot,
+      sessionIdUsed: currentSessionId,
+      source: "current",
+    }),
+    shouldFlagCompactionTimeout: () => false,
+  };
+});
 
 vi.mock("./history-image-prune.js", () => ({
   installHistoryImagePruneContextTransform: () => () => {},

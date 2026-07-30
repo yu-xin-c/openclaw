@@ -89,6 +89,7 @@ export async function finalizeEmbeddedAttemptStreamPhase(input: {
     const streamSettleState = {
       promptError: currentState.promptError,
       promptErrorSource: currentState.promptErrorSource,
+      intentionalHandoffAborted: currentState.intentionalHandoffAborted,
       yieldAborted: currentState.yieldAborted,
       sessionIdUsed: currentState.sessionIdUsed,
     };

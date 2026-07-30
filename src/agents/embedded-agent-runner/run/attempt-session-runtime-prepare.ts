@@ -81,7 +81,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     onSessionSettleTrackerReady: (
       buildAbortSettlePromise: SessionSettleTracker["buildAbortSettlePromise"],
     ) => void;
-    onSessionYieldReady: (input: {
+    onSessionHandoffReady: (input: {
       abortActiveSession: SessionSettleTracker["abortActiveSession"];
       activeSession: AgentSession;
     }) => void;
@@ -151,7 +151,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const settleTracker = createEmbeddedAttemptSessionSettleTracker(activeSession);
   input.externalAbortController.setActiveSessionAbort(settleTracker.abortActiveSession);
   input.lifecycle.onSessionSettleTrackerReady(settleTracker.buildAbortSettlePromise);
-  input.lifecycle.onSessionYieldReady({
+  input.lifecycle.onSessionHandoffReady({
     abortActiveSession: settleTracker.abortActiveSession,
     activeSession,
   });

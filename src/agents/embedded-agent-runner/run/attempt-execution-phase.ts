@@ -107,7 +107,9 @@ export async function runEmbeddedAttemptExecutionPhase(
       replaySafeToolNames,
     },
     lifecycle: {
-      isYieldDetected: () => input.lifecycle.readYieldState().yieldDetected,
+      isAttemptHandoffRequested: () =>
+        input.lifecycle.readYieldState().yieldDetected ||
+        input.lifecycle.readSelfCompactionState().selfCompactionRequested,
       markRejectedThinkingReplayRepaired: () => {
         repairedRejectedThinkingReplay = true;
       },

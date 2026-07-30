@@ -174,6 +174,10 @@ function createFixture() {
     diagnostics: { diagnosticTrace: {}, runTrace: {} },
     state,
     lifecycle: {
+      readSelfCompactionState: () => ({
+        selfCompactionAbortSettled: null,
+        selfCompactionRequested: false,
+      }),
       readYieldState: () => ({
         yieldAbortSettled: null,
         yieldDetected: true,

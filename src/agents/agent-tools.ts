@@ -125,6 +125,7 @@ import {
   type CronCreatorToolAllowlistEntry,
 } from "./tools/cron-tool.js";
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
+import type { SessionStatusSelfCompactHandler } from "./tools/session-status-tool.js";
 
 const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
 
@@ -452,6 +453,8 @@ type OpenClawCodingToolsOptions = {
   authProfileStore?: AuthProfileStore;
   /** Callback invoked when sessions_yield tool is called. */
   onYield?: (message: string) => Promise<void> | void;
+  /** Requests compaction for the current active embedded run. */
+  onSessionStatusSelfCompact?: SessionStatusSelfCompactHandler;
   /** Optional instrumentation callback for tool preparation stage timing. */
   recordToolPrepStage?: (name: string) => void;
   /** Lower routine policy-removal audits for diagnostic-only tool probes. */
@@ -1061,6 +1064,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             inheritedToolAllowlist,
             inheritedToolDenylist,
             onYield: options?.onYield,
+            onSessionStatusSelfCompact: options?.onSessionStatusSelfCompact,
             allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
             recordToolPrepStage: options?.recordToolPrepStage,
           }),

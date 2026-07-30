@@ -135,7 +135,7 @@ function createFixture(options: { aborted?: boolean } = {}) {
     history: { sandboxed: false },
     stream: {},
     lifecycle: {
-      isYieldDetected: () => false,
+      isAttemptHandoffRequested: () => false,
       markRejectedThinkingReplayRepaired: vi.fn(),
       markStreamReady,
       markIdleTimedOut,

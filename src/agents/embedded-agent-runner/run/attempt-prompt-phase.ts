@@ -96,7 +96,12 @@ export async function runEmbeddedAttemptPromptPhase(input: {
     ) => void;
     setFinalPromptText: (prompt: string) => void;
     markBeforeAgentRunBlocked: (outcome: BeforeAgentRunOutcome) => void;
+    markSelfCompactionAborted: () => void;
     markYieldAborted: () => void;
+    readSelfCompactionState: () => Pick<
+      PromptErrorInput,
+      "selfCompactionAbortSettled" | "selfCompactionRequested"
+    >;
     readYieldState: () => Pick<
       PromptErrorInput,
       "yieldAbortSettled" | "yieldDetected" | "yieldMessage"
@@ -311,16 +316,25 @@ export async function runEmbeddedAttemptPromptPhase(input: {
       attempt,
       error,
       handleMidTurnPrecheckRequest,
+      markSelfCompactionAborted: input.lifecycle.markSelfCompactionAborted,
       markYieldAborted: input.lifecycle.markYieldAborted,
       releaseLeasedSteering,
+      sessionManager,
       sessionLockController: input.sessionLockController,
       withOwnedSessionWriteLock: input.withOwnedSessionWriteLock,
+      ...input.lifecycle.readSelfCompactionState(),
       ...input.lifecycle.readYieldState(),
     });
-    if (promptErrorOutcome.promptFailure) {
+    if (promptErrorOutcome.kind === "self_compaction") {
       patchState({
-        promptError: promptErrorOutcome.promptFailure.error,
-        promptErrorSource: promptErrorOutcome.promptFailure.source,
+        preflightRecovery: promptErrorOutcome.preflightRecovery,
+        promptError: promptErrorOutcome.promptError,
+        promptErrorSource: "precheck",
+      });
+    } else if (promptErrorOutcome.kind === "prompt_failure") {
+      patchState({
+        promptError: promptErrorOutcome.error,
+        promptErrorSource: promptErrorOutcome.source,
       });
     }
   } finally {

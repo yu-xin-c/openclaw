@@ -92,6 +92,22 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
     });
   });
 
+  it("passes the active-run self-compaction callback into runtime tools", async () => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey: "agent:main:main",
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+      },
+    });
+
+    const toolsCall = hoisted.createOpenClawCodingToolsMock.mock.calls[0]?.[0] as
+      | { onSessionStatusSelfCompact?: unknown }
+      | undefined;
+    expect(typeof toolsCall?.onSessionStatusSelfCompact).toBe("function");
+  });
+
   it("skips runtime tool construction when the selected model does not support tools", async () => {
     hoisted.supportsModelToolsMock.mockReturnValueOnce(false);
 

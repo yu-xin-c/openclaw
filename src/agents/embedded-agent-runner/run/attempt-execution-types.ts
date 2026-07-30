@@ -71,6 +71,10 @@ export type EmbeddedAttemptExecutionPhaseInput = {
   };
   state: EmbeddedAttemptExecutionState;
   lifecycle: {
+    readSelfCompactionState: () => {
+      selfCompactionAbortSettled: Promise<void> | null;
+      selfCompactionRequested: boolean;
+    };
     readYieldState: () => {
       yieldAbortSettled: Promise<void> | null;
       yieldDetected: boolean;

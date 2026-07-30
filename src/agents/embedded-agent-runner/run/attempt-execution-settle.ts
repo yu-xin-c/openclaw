@@ -117,6 +117,7 @@ export async function runEmbeddedAttemptSettledPhase(
   const { tools, uncompactedEffectiveTools } = bundleTools;
   const { toolSearchTargetTranscriptProjections } = toolBase;
   const hookAgentId = input.setup.sessionAgentId;
+  let intentionalHandoffAborted = false;
   let yieldAborted = false;
   const preparedStreamRuntime = input.preparedStreamRuntime;
   const {
@@ -291,13 +292,22 @@ export async function runEmbeddedAttemptSettledPhase(
           state.beforeAgentRunBlocked = true;
           state.beforeAgentRunBlockedBy = outcome.blockedBy;
         },
+        markSelfCompactionAborted: () => {
+          intentionalHandoffAborted = true;
+          state.terminal = mergeAgentRunAttemptTerminal(state.terminal, {
+            kind: "aborted",
+            source: "yield_cleanup",
+          });
+        },
         markYieldAborted: () => {
+          intentionalHandoffAborted = true;
           yieldAborted = true;
           state.terminal = mergeAgentRunAttemptTerminal(state.terminal, {
             kind: "aborted",
             source: "yield_cleanup",
           });
         },
+        readSelfCompactionState: input.lifecycle.readSelfCompactionState,
         readYieldState: input.lifecycle.readYieldState,
         stopAcceptingSteerMessages,
         takePendingMidTurnPrecheckRequest: contextGuards.takePendingMidTurnPrecheckRequest,
@@ -344,6 +354,7 @@ export async function runEmbeddedAttemptSettledPhase(
         return {
           promptError: terminal.promptError,
           promptErrorSource: terminal.promptErrorSource,
+          intentionalHandoffAborted,
           yieldAborted,
           sessionIdUsed,
           sessionFileUsed,

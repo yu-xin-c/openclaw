@@ -77,7 +77,10 @@ import { createNodesTool } from "./tools/nodes-tool.js";
 import { createOpenClawDelegateToolsForRun } from "./tools/openclaw-delegate-tool.js";
 import { createPdfTool } from "./tools/pdf-tool.js";
 import { createScreenTool } from "./tools/screen-tool.js";
-import { createSessionStatusTool } from "./tools/session-status-tool.js";
+import {
+  createSessionStatusTool,
+  type SessionStatusSelfCompactHandler,
+} from "./tools/session-status-tool.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSearchTool } from "./tools/sessions-search-tool.js";
@@ -217,6 +220,8 @@ export function createOpenClawTools(
     cwd?: string;
     /** Callback invoked when sessions_yield tool is called. */
     onYield?: (message: string) => Promise<void> | void;
+    /** Requests compaction for the current active embedded run. */
+    onSessionStatusSelfCompact?: SessionStatusSelfCompactHandler;
     /** Allow plugin tools for this tool set to late-bind the gateway subagent. */
     allowGatewaySubagentBinding?: boolean;
   } & SpawnedToolContext &
@@ -712,6 +717,7 @@ export function createOpenClawTools(
         accountId: options?.agentAccountId,
         threadId: options?.currentThreadTs ?? options?.agentThreadId,
       },
+      onSelfCompact: options?.onSessionStatusSelfCompact,
     }),
     ...collectPresentOpenClawTools([webSearchTool, webFetchTool, imageTool, pdfTool]),
   ];

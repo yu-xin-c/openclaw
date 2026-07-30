@@ -546,14 +546,24 @@ function latestMockCallArg(mock: ReturnType<typeof vi.fn>, argIndex = 0) {
 
 function getSessionStatusTool(
   agentSessionKey = "main",
-  options?: { sandboxed?: boolean; activeModelProvider?: string; activeModelId?: string },
+  options?: {
+    sandboxed?: boolean;
+    activeModelProvider?: string;
+    activeModelId?: string;
+    runSessionKey?: string;
+    onSelfCompact?: NonNullable<
+      NonNullable<Parameters<typeof createSessionStatusTool>[0]>["onSelfCompact"]
+    >;
+  },
 ) {
   const tool = createSessionStatusTool({
     agentSessionKey,
+    runSessionKey: options?.runSessionKey,
     sandboxed: options?.sandboxed,
     activeModelProvider: options?.activeModelProvider,
     activeModelId: options?.activeModelId,
     config: mockConfig as never,
+    onSelfCompact: options?.onSelfCompact,
   });
   expect(tool.name).toBe("session_status");
   return tool;
@@ -601,6 +611,120 @@ describe("session_status tool", () => {
       '{ changedModel: boolean; ok: true; sessionKey: string; stateVersion: number; statusText: string; active?: { accountId?: string; channel?: string; threadId?: string | number; to?: string }; deliveryContext?: { accountId?: string; channel?: string; threadId?: string | number; to?: string }; model?: string; modelOverride?: string | null; modelProvider?: string; origin?: { accountId?: string; provider?: string; threadId?: string | number }; stateChanges?: { earliestAvailableSequence: number; events: Array<{ actorType: "human" | "agent" | "system"; kind: string; occurredAt: number; sequence: number; summary: string; actorId?: string; payload?: { channel?: string; outcome?: "error" | "timeout" | "cancelled"; turns?: number }; runId?: string }>; historyGap: boolean; truncated: boolean } }',
     );
   });
+
+  it("only advertises a provider-safe compact action for active embedded runs", () => {
+    const inactiveTool = getSessionStatusTool();
+    const activeTool = getSessionStatusTool("main", {
+      onSelfCompact: async () => undefined,
+    });
+    const readActionSchema = (tool: ReturnType<typeof getSessionStatusTool>) =>
+      (
+        tool.parameters as {
+          properties?: Record<string, { type?: unknown; enum?: unknown; anyOf?: unknown }>;
+        }
+      ).properties?.action;
+
+    expect(readActionSchema(inactiveTool)).toBeUndefined();
+    expect(inactiveTool.description).not.toContain('action="compact"');
+    expect(readActionSchema(activeTool)).toMatchObject({
+      type: "string",
+      enum: ["status", "compact"],
+    });
+    expect(readActionSchema(activeTool)?.anyOf).toBeUndefined();
+    expect(activeTool.description).toContain('action="compact"');
+  });
+
+  it("requests self-compaction for the current live session", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "s1",
+        updatedAt: 10,
+      },
+    });
+    const onSelfCompact = vi.fn(async () => undefined);
+    const tool = getSessionStatusTool("main", { onSelfCompact });
+
+    const result = await tool.execute("call-compact", { action: "compact" });
+
+    expect(onSelfCompact).toHaveBeenCalledWith({
+      sessionKey: "main",
+      sessionId: "s1",
+      agentId: "main",
+    });
+    expect(result.details).toMatchObject({
+      ok: true,
+      sessionKey: "main",
+      changedModel: false,
+    });
+    expect(result.content?.[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("Self-compaction requested"),
+    });
+    expect(Value.Check(tool.outputSchema!, result.details)).toBe(true);
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects self-compaction without an active embedded run", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "s1",
+        updatedAt: 10,
+      },
+    });
+    const tool = getSessionStatusTool();
+
+    await expect(tool.execute("call-compact-no-run", { action: "compact" })).rejects.toThrow(
+      'session_status action "compact" is only available during an active embedded agent run.',
+    );
+  });
+
+  it("rejects self-compaction for another visible session", async () => {
+    mockConfig = {
+      ...createMockConfig(),
+      tools: {
+        sessions: { visibility: "all" },
+        agentToAgent: { enabled: false },
+      },
+    };
+    resetSessionStore({
+      main: {
+        sessionId: "s1",
+        updatedAt: 10,
+      },
+      other: {
+        sessionId: "s2",
+        updatedAt: 11,
+      },
+    });
+    const onSelfCompact = vi.fn(async () => undefined);
+    const tool = getSessionStatusTool("main", { onSelfCompact });
+
+    await expect(
+      tool.execute("call-compact-other", { action: "compact", sessionKey: "other" }),
+    ).rejects.toThrow('session_status action "compact" can only target the current session.');
+    expect(onSelfCompact).not.toHaveBeenCalled();
+  });
+
+  it.each([{ model: "default" }, { changesSince: 0 }])(
+    "rejects self-compaction combined with status mutations or queries: %j",
+    async (extraArgs) => {
+      resetSessionStore({
+        main: {
+          sessionId: "s1",
+          updatedAt: 10,
+        },
+      });
+      const onSelfCompact = vi.fn(async () => undefined);
+      const tool = getSessionStatusTool("main", { onSelfCompact });
+
+      await expect(
+        tool.execute("call-compact-conflict", { action: "compact", ...extraArgs }),
+      ).rejects.toThrow(
+        'session_status action "compact" cannot be combined with model or changesSince.',
+      );
+      expect(onSelfCompact).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns read-only state changes and the signal-log head", async () => {
     resetSessionStore({

@@ -30,6 +30,8 @@ import { prepareEmbeddedAttemptBootstrap } from "./attempt-bootstrap-prepare.js"
 import { prepareEmbeddedAttemptBundleTools } from "./attempt-bundle-tools.js";
 import { runEmbeddedAttemptExecutionPhase } from "./attempt-execution-phase.js";
 import type { EmbeddedAttemptExecutionState } from "./attempt-execution-types.js";
+import { isAttemptHandoffAbortReason } from "./attempt-handoff.js";
+import { SESSION_STATUS_SELF_COMPACT_ABORT_REASON } from "./attempt-self-compaction.js";
 import { cleanupEmbeddedAttemptSessionPhase } from "./attempt-session-cleanup.js";
 import { prepareEmbeddedAttemptSessionLock } from "./attempt-session-lock-prepare.js";
 import { prepareEmbeddedAttemptSessionRuntime } from "./attempt-session-runtime-prepare.js";
@@ -131,13 +133,14 @@ export async function runEmbeddedAttempt(
     }
   };
   const abortState: EmbeddedAttemptAbortStatePort = {
+    // `yield_cleanup` is the established non-terminal projection for intentional
+    // intra-turn handoffs; keep it stable for plugin/lifecycle compatibility.
     markAborted: () =>
       mergeTerminal({
         kind: "aborted",
-        source:
-          runAbortController.signal.reason === SESSIONS_YIELD_ABORT_REASON
-            ? "yield_cleanup"
-            : "runtime",
+        source: isAttemptHandoffAbortReason(runAbortController.signal.reason)
+          ? "yield_cleanup"
+          : "runtime",
       }),
     markExternalAbort: () => mergeTerminal({ kind: "aborted", source: "external" }),
     markTimedOut: () => mergeTerminal({ kind: "timeout", phase: "prompt", source: "runtime" }),
@@ -193,6 +196,23 @@ export async function runEmbeddedAttempt(
     emitDiagnosticRunCompleted = emitCompleted;
     const corePluginToolStages = createEmbeddedRunStageTracker();
     let toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor | undefined;
+    let yieldDetected = false;
+    let yieldMessage: string | null = null;
+    let selfCompactionRequested = false;
+    let claimedHandoff: "sessions_yield" | "session_status_compact" | null = null;
+    const claimHandoff = (handoff: NonNullable<typeof claimedHandoff>): boolean => {
+      if (claimedHandoff !== null) {
+        return false;
+      }
+      claimedHandoff = handoff;
+      return true;
+    };
+    // Tool construction precedes the active session; these callbacks bind once it is ready.
+    let abortSessionForYield: (() => void) | null = null;
+    let abortSessionForSelfCompaction: (() => void) | null = null;
+    let queueYieldInterruptForSession: (() => void) | null = null;
+    let yieldAbortSettled: Promise<void> | null = null;
+    let selfCompactionAbortSettled: Promise<void> | null = null;
     const preparedToolBase = measureEmbeddedAgentPreparationSync(
       "attempt.tool-base",
       () =>
@@ -203,11 +223,35 @@ export async function runEmbeddedAttempt(
           effectiveWorkspace,
           markCoreToolStage: (name) => corePluginToolStages.mark(name),
           onYield: (message) => {
+            if (!claimHandoff("sessions_yield")) {
+              return;
+            }
             yieldDetected = true;
             yieldMessage = message;
             queueYieldInterruptForSession?.();
             runAbortController.abort(SESSIONS_YIELD_ABORT_REASON);
             abortSessionForYield?.();
+          },
+          onSessionStatusSelfCompact: (request) => {
+            if (claimedHandoff !== null) {
+              return;
+            }
+            if (request.sessionId !== params.sessionId || request.agentId !== sessionAgentId) {
+              throw new Error(
+                'session_status action "compact" no longer matches the active agent run.',
+              );
+            }
+            if (!abortSessionForSelfCompaction) {
+              throw new Error(
+                'session_status action "compact" is unavailable before the active session is ready.',
+              );
+            }
+            if (!claimHandoff("session_status_compact")) {
+              return;
+            }
+            selfCompactionRequested = true;
+            runAbortController.abort(SESSION_STATUS_SELF_COMPACT_ABORT_REASON);
+            abortSessionForSelfCompaction();
           },
           resolvedWorkspace,
           runAbortController,
@@ -255,13 +299,6 @@ export async function runEmbeddedAttempt(
         }),
       { config: params.config },
     );
-    // Track sessions_yield tool invocation (callback pattern, like clientToolCallDetected)
-    let yieldDetected = false;
-    let yieldMessage: string | null = null;
-    // Late-binding reference so onYield can abort the session (declared after tool creation)
-    let abortSessionForYield: (() => void) | null = null;
-    let queueYieldInterruptForSession: (() => void) | null = null;
-    let yieldAbortSettled: Promise<void> | null = null;
     const preparedBundleTools = await measureEmbeddedAgentPreparation(
       "attempt.bundle-tools",
       () =>
@@ -443,9 +480,14 @@ export async function runEmbeddedAttempt(
               onSessionSettleTrackerReady: (build) => {
                 buildAbortSettlePromise = build;
               },
-              onSessionYieldReady: ({ abortActiveSession, activeSession }) => {
+              onSessionHandoffReady: ({ abortActiveSession, activeSession }) => {
                 abortSessionForYield = () => {
                   yieldAbortSettled = abortActiveSession(SESSIONS_YIELD_ABORT_REASON);
+                };
+                abortSessionForSelfCompaction = () => {
+                  selfCompactionAbortSettled = abortActiveSession(
+                    SESSION_STATUS_SELF_COMPACT_ABORT_REASON,
+                  );
                 };
                 queueYieldInterruptForSession = () => {
                   queueSessionsYieldInterruptMessage(activeSession);
@@ -493,6 +535,10 @@ export async function runEmbeddedAttempt(
         diagnostics: { diagnosticTrace, runTrace },
         state: executionState,
         lifecycle: {
+          readSelfCompactionState: () => ({
+            selfCompactionAbortSettled,
+            selfCompactionRequested,
+          }),
           readYieldState: () => ({ yieldAbortSettled, yieldDetected, yieldMessage }),
           setToolSearchCatalogExecutor: (executor) => {
             toolSearchCatalogExecutor = executor;

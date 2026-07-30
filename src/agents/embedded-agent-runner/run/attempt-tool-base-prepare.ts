@@ -44,6 +44,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
   effectiveCwd: string;
   effectiveWorkspace: string;
   markCoreToolStage: (name: string) => void;
+  onSessionStatusSelfCompact: NonNullable<OpenClawCodingToolsOptions["onSessionStatusSelfCompact"]>;
   onYield: NonNullable<OpenClawCodingToolsOptions["onYield"]>;
   resolvedWorkspace: string;
   runAbortController: AbortController;
@@ -309,6 +310,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
           skillUsagePaths: params.skillUsagePaths,
           conversationCapabilityProfile: runtimeCapabilityProfile,
           scheduledToolPolicy: attempt.scheduledToolPolicy,
+          onSessionStatusSelfCompact: params.onSessionStatusSelfCompact,
           onYield: params.onYield,
         });
         params.markCoreToolStage("attempt:create-openclaw-coding-tools");
