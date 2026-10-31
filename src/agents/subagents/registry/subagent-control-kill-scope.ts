@@ -9,7 +9,7 @@ import {
 } from "../../../infra/agent-events.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
+import { isCurrentSessionControllerTurnInput } from "../../../sessions/session-controller.context.js";
 import {
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
   waitForSessionControllerSettlement,
@@ -568,13 +568,12 @@ export async function withSubagentKillScope<T>(
   const settleQueued = async (tree: KillTree): Promise<void> => {
     const { entry, session, dispatchHold } = tree;
     const capturedExecution = session && captureSubagentExecution({ entry, session });
-    const currentOperation = getCurrentSessionControllerOwner();
     if (tree.cleanupPending) {
       return;
     }
     if (
       capturedExecution &&
-      (!currentOperation || currentOperation !== capturedExecution.execution.input.claim?.operation)
+      !isCurrentSessionControllerTurnInput(capturedExecution.execution.input)
     ) {
       try {
         const settled = await waitForSessionControllerSettlement(
