@@ -29,6 +29,7 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import { withSessionControllerSource } from "../../../sessions/session-controller.context.js";
+import * as controllerLifecycle from "../../../sessions/session-controller.lifecycle.js";
 import {
   beginSessionEffect,
   captureSessionTarget,
@@ -328,6 +329,60 @@ function observeExecutionJoin(entry: RpcSourceRef, selected: () => void) {
     },
   };
 }
+
+it("reports a queued execution drain deadline in a bulk Stop result", async ({ signal }) => {
+  const target = await seedExecutionTarget("bulk-drain", "bulk-drain-revision");
+  const { owner, releaseTail, execution, registration } = await holdExecution(target);
+  const joined = createDeferred();
+  observeExecutionJoin(owner, joined.resolve);
+  const draining = createDeferred();
+  const waitForSettlement = controllerLifecycle.waitForSessionControllerSettlement;
+  let replacement: ReturnType<typeof registerAbort> | undefined;
+  vi.spyOn(controllerLifecycle, "waitForSessionControllerSettlement").mockImplementation(
+    (promise, timeoutMs) => {
+      const settled = waitForSettlement(promise, timeoutMs);
+      if (promise === replacement?.entry?.input.settlement.promise) {
+        draining.resolve();
+      }
+      return settled;
+    },
+  );
+  vi.useFakeTimers();
+  const pending = killAllControlledSubagentRuns({
+    cfg: getRuntimeConfig(),
+    controller: controlController,
+    runs: [subagentRuns.get(target.runId)!],
+  });
+  try {
+    await withinTest(
+      awaitGateBeforeSettlement(joined.promise, pending, "Stop returned before source cleanup"),
+      signal,
+    );
+    rpcSourceTesting.deleteExpected(target.runId, owner);
+    replacement = registerAbort(target);
+    releaseTail.resolve();
+    await withinTest(
+      awaitGateBeforeSettlement(draining.promise, pending, "Stop returned before its final drain"),
+      signal,
+    );
+    await vi.advanceTimersByTimeAsync(controllerLifecycle.SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
+    await expect(withinTest(pending, signal)).resolves.toMatchObject({
+      status: "error",
+      failed: 1,
+      killed: 1,
+      error: expect.stringContaining(
+        "Subagent queued execution cleanup remains pending after its drain deadline.",
+      ),
+    });
+    expect(replacement.controller.signal.aborted).toBe(false);
+  } finally {
+    releaseTail.resolve();
+    replacement?.cleanup();
+    vi.useRealTimers();
+    await Promise.allSettled([pending, execution]);
+    registration.cleanup();
+  }
+});
 
 it.each([
   "abort",
@@ -698,6 +753,7 @@ it.each([
 ] as const)(
   "normal terminal cleanup preserves exact Stop ownership ($mode, afterCleanup=$startsAfterCleanup)",
   async ({ mode, startsAfterCleanup }) => {
+    const settlementWait = vi.spyOn(controllerLifecycle, "waitForSessionControllerSettlement");
     const sourceOnlyDisposal = mode === "self-disposal after turn completion";
     const registryBindingLoss = mode === "self-disposal after registry binding loss";
     const retiresDuringStop =
@@ -886,6 +942,10 @@ it.each([
       if (selfDisposal) {
         expect(await execution).toBeUndefined();
         expect(stopReturned).toBe(true);
+        expect(settlementWait.mock.settledResults).not.toContainEqual({
+          type: "fulfilled",
+          value: false,
+        });
       }
       const result = await pending;
       const executionResult = await execution;

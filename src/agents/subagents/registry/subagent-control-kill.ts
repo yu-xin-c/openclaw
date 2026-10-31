@@ -539,7 +539,7 @@ async function killSelectedSubagentRuns(
     beforeKill?: (sealRootSelection: () => void) => boolean | Promise<boolean>;
   },
 ) {
-  const result = await withSubagentKillScope(params, async (scope, trees) => {
+  const settled = await withSubagentKillScope(params, async (scope, trees) => {
     const accepted = params.beforeKill ? await params.beforeKill(scope.sealRootSelection) : true;
     scope.sealRootSelection();
     if (accepted) {
@@ -554,8 +554,10 @@ async function killSelectedSubagentRuns(
       trees: acceptedTrees,
       scope,
     });
-    return { ...stopped, ...collectKillErrors(acceptedTrees) };
+    return { stopped, trees: acceptedTrees };
   });
+  // The scope's final execution drain can add errors after traversal has finished.
+  const result = { ...settled.stopped, ...collectKillErrors(settled.trees) };
   result.errors.unshift(...(params.preparationErrors ?? []));
   result.failed += params.preparationErrors?.length ?? 0;
   if (result.errors.length > 0) {

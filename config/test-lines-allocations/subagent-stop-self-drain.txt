@@ -1,0 +1,2 @@
+# Self-disposal must not hit its own drain deadline; bulk Stop must report late drain failures.
+60
